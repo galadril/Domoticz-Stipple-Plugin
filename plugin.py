@@ -1,5 +1,5 @@
 """
-<plugin key="STIPPLE" name="Stipple" author="Mark Heinis" version="1.0.0" wikilink="https://github.com/galadril/Stipple" externallink="https://github.com/galadril/Stipple">
+<plugin key="STIPPLE" name="Stipple" author="Mark Heinis" version="1.0.2" wikilink="https://github.com/galadril/Stipple" externallink="https://github.com/galadril/Stipple">
     <description>
         <h2>Stipple Plugin</h2><br/>
         Integrates Stipple firmware with Domoticz while keeping the supported
@@ -45,14 +45,14 @@ from requests.auth import HTTPBasicAuth
 # existing dzVents automation.
 # ---------------------------------------------------------------------------
 
-UNIT_POWER = 1                  # reserved: no documented Stipple power API
+UNIT_POWER = 1                  # AWTRIX-compatible Power device; exact Stipple settings field still TBD
 UNIT_LUX = 2                    # unsupported by Stipple
 UNIT_TEMPHUM = 3                # unsupported by Stipple
 UNIT_NOTIFICATION = 4
 UNIT_CUSTOMAPP = 5
 UNIT_SETTINGS = 6
-UNIT_NEXTAPP = 7
-UNIT_PREVAPP = 8
+UNIT_NEXTAPP = 7              # /input {"control":"right"}
+UNIT_PREVAPP = 8              # /input {"control":"left"}
 UNIT_DISMISS = 9
 UNIT_RTTTL = 10                 # unsupported by Stipple
 UNIT_TRANSITION = 11
@@ -72,17 +72,19 @@ UNIT_AUTOTRANSITION = 23        # not mapped until exact Stipple field is docume
 DEFAULT_APP_NAME = "Domoticz"
 DEFAULT_ICON_ID = "39762"
 
-# Keep AWTRIX selector ordering. Existing dzVents scripts may set selector
-# levels directly, so reordering these would be a breaking change.
-TRANSITION_NAMES = [
-    "Off", "Random", "Slide", "Dim", "Zoom", "Rotate",
-    "Pixelate", "Curtain", "Ripple", "Blink", "Reload", "Fade",
-    "Cover", "Uncover", "Split", "Blinds", "Blocks", "Flash",
-    "Diamond", "Wave", "Rain", "Melt", "Interlace",
-]
+# Stipple-native settings exposed by the Web UI.
+# Selector order is now the Stipple order; these values map directly to the
+# settings API instead of pretending unsupported AWTRIX effects exist.
+TRANSITION_NAMES = ["Slide", "Fade", "Wipe", "Dissolve", "Cut"]
+TRANSITION_VALUES = ["slide", "fade", "wipe", "dissolve", "none"]
 
 OVERLAY_NAMES = [
-    "Off", "Snow", "Rain", "Drizzle", "Storm", "Thunder", "Frost"
+    "None", "Rain", "Snow", "Storm", "Frost",
+    "Fog", "Stars", "Sparkle", "Confetti"
+]
+OVERLAY_VALUES = [
+    "none", "rain", "snow", "storm", "frost",
+    "fog", "stars", "sparkle", "confetti"
 ]
 
 
@@ -135,6 +137,13 @@ class BasePlugin:
         #
         # The device names/types/units below intentionally mirror the supported
         # subset of Domoticz-AWTRIXNG-Plugin.
+
+        if UNIT_POWER not in Devices:
+            Domoticz.Device(
+                Name="Power",
+                Unit=UNIT_POWER,
+                TypeName="Switch"
+            ).Create()
 
         if UNIT_NOTIFICATION not in Devices:
             Domoticz.Device(
@@ -189,7 +198,7 @@ class BasePlugin:
                 Name="Transition effect",
                 Unit=UNIT_TRANSITION,
                 TypeName="Selector Switch",
-                Options=selectorOptions(TRANSITION_NAMES, True)
+                Options=selectorOptions(TRANSITION_NAMES, False)
             ).Create()
 
         if UNIT_OVERLAY not in Devices:
@@ -550,18 +559,39 @@ class BasePlugin:
 
     def navigate(self, direction):
         """
-        Stipple exposes navigation through /input. Try the conventional
-        carousel control names. If firmware uses different control names the
-        API will return 422 and the log will make that explicit.
+        Inject the same controls used by the Stipple web UI.
+
+        Confirmed web UI request:
+            POST /api/v1/input
+            {"control": "right"}
+
+        right = next app
+        left  = previous app
         """
-        self._request("POST", "/input", {
-            "control": direction,
-            "phase": "tick"
+        control = "right" if direction == "next" else "left"
+        return self._request("POST", "/input", {
+            "control": control
         })
 
     def dismissNotifications(self):
         # The documented collection DELETE clears queued/showing notifications.
         self._request("DELETE", "/notifications")
+
+    def setPower(self, command):
+        """
+        Keep AWTRIX-compatible Unit 1 available to dzVents.
+
+        Stipple power is known to be changed through PATCH /settings, but the
+        exact JSON property was not present in the supplied OpenAPI/request log.
+        Do not invent a settings field and report success when the panel did
+        not actually change.
+        """
+        state = command.upper() == "ON"
+        Domoticz.Error(
+            "Power {} requested, but the exact Stipple PATCH /settings power "
+            "field is not known yet. Unit 1 is kept for dzVents compatibility."
+            .format("ON" if state else "OFF")
+        )
 
     def setBrightness(self, command, level):
         if command == "Off":
@@ -588,30 +618,24 @@ class BasePlugin:
 
     def setTransition(self, level):
         """
-        Compatibility mapping.
+        Stipple Web UI mapping:
+            PATCH /api/v1/settings
+            {"apps":{"transition":"slide"}}
 
-        The supplied OpenAPI does not document the concrete transition field,
-        but Stipple supports transitions. Keep the AWTRIX selector contract and
-        send the value under display.transition.
-
-        If the firmware exposes another field name, this is the only mapping
-        that needs changing; Domoticz/dzVents stays untouched.
+        Values: slide, fade, wipe, dissolve, none (Cut).
         """
         try:
             index = int(level / 10)
         except (TypeError, ValueError):
             return
 
-        if index < 0 or index >= len(TRANSITION_NAMES):
+        if index < 0 or index >= len(TRANSITION_VALUES):
             return
-
-        name = TRANSITION_NAMES[index]
-        value = None if index == 0 else name.lower()
 
         result = self._request(
             "PATCH",
             "/settings",
-            {"display": {"transition": value}}
+            {"apps": {"transition": TRANSITION_VALUES[index]}}
         )
         if result is not None:
             Devices[UNIT_TRANSITION].Update(
@@ -621,22 +645,24 @@ class BasePlugin:
 
     def setOverlay(self, level):
         """
-        Compatibility mapping; see setTransition().
+        Stipple Web UI mapping:
+            PATCH /api/v1/settings
+            {"display":{"overlay":"fog"}}
+
+        Values: none, rain, snow, storm, frost, fog, stars, sparkle, confetti.
         """
         try:
             index = int(level / 10)
         except (TypeError, ValueError):
             return
 
-        if index < 0 or index >= len(OVERLAY_NAMES):
+        if index < 0 or index >= len(OVERLAY_VALUES):
             return
-
-        value = None if index == 0 else OVERLAY_NAMES[index].lower()
 
         result = self._request(
             "PATCH",
             "/settings",
-            {"display": {"overlay": value}}
+            {"display": {"overlay": OVERLAY_VALUES[index]}}
         )
         if result is not None:
             Devices[UNIT_OVERLAY].Update(
@@ -659,7 +685,10 @@ class BasePlugin:
             )
         )
 
-        if Unit == UNIT_NOTIFICATION:
+        if Unit == UNIT_POWER:
+            self.setPower(Command)
+
+        elif Unit == UNIT_NOTIFICATION:
             message = self.payloadText(Unit)
             if not message:
                 Domoticz.Error("Notification payload is empty")
