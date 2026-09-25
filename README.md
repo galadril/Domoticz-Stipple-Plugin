@@ -1,53 +1,80 @@
-# 🧩 Domoticz Python Plugin Template
+# Domoticz Stipple Plugin
 
-This repository serves as a **template** for creating Python plugins for Domoticz. It includes a basic structure, sample code, and placeholders to kickstart your plugin development.
+Domoticz integration for [Stipple](https://github.com/galadril/Stipple)
 
-----------
+## Supported compatibility devices
 
-## 🚀 How to Use This Template
+The unit numbers are intentionally inherited from the AWTRIX NG plugin.
 
-1.  **Use This Template**  
+| Unit | Domoticz device | Stipple implementation |
+|---:|---|---|
+| 4 | Send Notification | `POST /api/v1/notifications` |
+| 5 | Send Custom App | `PUT /api/v1/apps/{id}` + activate |
+| 6 | Send Settings | `PATCH /api/v1/settings` |
+| 7 | Next App | `POST /api/v1/input` |
+| 8 | Previous App | `POST /api/v1/input` |
+| 9 | Dismiss Notification | `DELETE /api/v1/notifications` |
+| 11 | Transition effect | Stipple display setting compatibility mapping |
+| 12 | Overlay | Stipple display setting compatibility mapping |
+| 14 | Brightness | Stipple display settings |
 
-    Click the green **"Use this template"** button on the top-right of this page to create your own repository.
-    
-3.  **Customize Your Plugin**
-    -   Update `plugin.py` with your plugin logic.
-    -   Modify the `<plugin>` XML block with your plugin's metadata.
-    -   Add any custom assets (e.g., icons) in the `config/` folder.
-  
-4.  **Test Your Plugin**
-    -   Copy the plugin to your Domoticz `plugins` folder and restart Domoticz.
 
-----------
+## Installation
 
-## 📄 Plugin Readme Template
+Clone the repository into the Domoticz plugin directory:
 
-Use the following template for documenting your plugin:
+```bash
+cd ~/domoticz/plugins
+git clone https://github.com/galadril/Domoticz-Stipple-Plugin.git
+sudo systemctl restart domoticz
+```
 
-```markdown
-# 🛠️ [Plugin Name]
+Then add the hardware in:
 
-[Short description of the plugin, e.g., "This plugin integrates Domoticz with [service/device]."]
+**Setup → Hardware → Stipple**
 
----
+Configure the clock's hostname or IP address. The default is:
 
-## ✨ Features
+```text
+stipple.local
+```
 
-- [Feature 1, e.g., "Monitor and control [device] from Domoticz."]
-- [Feature 2, e.g., "Supports advanced debugging and detailed logging."]
-- [Feature 3, e.g., "Custom icons for a polished interface."]
+If Stipple HTTP Basic authentication is enabled, enter the username/password in
+the hardware configuration.
 
----
+## Notifications
 
-## 📥 Installation
+`Send Notification` intentionally accepts the same convenient formats as the.
 
-1. **Clone or download this repository**:  
-   git clone https://github.com/your-username/[plugin-repo].git
+### Plain text
 
-2.  **Copy the plugin to your Domoticz plugins folder**:
-    cp -R [plugin-repo] /path/to/domoticz/plugins/
-    
-3.  **Restart Domoticz** to load the new plugin:
-    sudo service domoticz.sh restart
-    
+Put this in the Domoticz device Description:
 
+```text
+Hello from Domoticz
+```
+
+The configured default Stipple asset ID is used as the icon.
+
+### Icon + text shorthand
+
+```text
+39762;Washing machine is finished
+```
+
+## Requirements
+
+- Domoticz with Python plugin support
+- Python 3
+- `requests`
+- Stipple device reachable from the Domoticz host
+
+Install `requests` if necessary:
+
+```bash
+python3 -m pip install requests
+```
+
+## License
+
+GPL-3.0-or-later
