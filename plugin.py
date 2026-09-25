@@ -1,5 +1,5 @@
 """
-<plugin key="STIPPLE" name="Stipple" author="Mark Heinis" version="1.0.2" wikilink="https://github.com/galadril/Stipple" externallink="https://github.com/galadril/Stipple">
+<plugin key="STIPPLE" name="Stipple" author="Mark Heinis" version="1.0.3" wikilink="https://github.com/galadril/Stipple" externallink="https://github.com/galadril/Stipple">
     <description>
         <h2>Stipple Plugin</h2><br/>
         Integrates Stipple firmware with Domoticz while keeping the supported
@@ -45,7 +45,7 @@ from requests.auth import HTTPBasicAuth
 # existing dzVents automation.
 # ---------------------------------------------------------------------------
 
-UNIT_POWER = 1                  # AWTRIX-compatible Power device; exact Stipple settings field still TBD
+UNIT_POWER = 1                  # display.power
 UNIT_LUX = 2                    # unsupported by Stipple
 UNIT_TEMPHUM = 3                # unsupported by Stipple
 UNIT_NOTIFICATION = 4
@@ -67,7 +67,7 @@ UNIT_INDICATOR2 = 19            # unsupported
 UNIT_INDICATOR3 = 20            # unsupported
 UNIT_CLOCKLAYOUT = 21           # not mapped yet
 UNIT_SCROLL = 22                # not mapped yet
-UNIT_AUTOTRANSITION = 23        # not mapped until exact Stipple field is documented
+UNIT_AUTOTRANSITION = 23        # apps.transitions
 
 DEFAULT_APP_NAME = "Domoticz"
 DEFAULT_ICON_ID = "39762"
@@ -214,6 +214,13 @@ class BasePlugin:
                 Name="Brightness",
                 Unit=UNIT_BRIGHTNESS,
                 TypeName="Dimmer"
+            ).Create()
+
+        if UNIT_AUTOTRANSITION not in Devices:
+            Domoticz.Device(
+                Name="Auto Transition",
+                Unit=UNIT_AUTOTRANSITION,
+                TypeName="Switch"
             ).Create()
 
     # ---------------------------------------------------------------- HTTP
@@ -579,21 +586,28 @@ class BasePlugin:
 
     def setPower(self, command):
         """
-        Keep AWTRIX-compatible Unit 1 available to dzVents.
-
-        Stipple power is known to be changed through PATCH /settings, but the
-        exact JSON property was not present in the supplied OpenAPI/request log.
-        Do not invent a settings field and report success when the panel did
-        not actually change.
+        Stipple panel power:
+            PATCH /api/v1/settings
+            {"display":{"power":true|false}}
         """
         state = command.upper() == "ON"
-        Domoticz.Error(
-            "Power {} requested, but the exact Stipple PATCH /settings power "
-            "field is not known yet. Unit 1 is kept for dzVents compatibility."
-            .format("ON" if state else "OFF")
+
+        result = self._request(
+            "PATCH",
+            "/settings",
+            {"display": {"power": state}}
         )
 
+        if result is not None:
+            Devices[UNIT_POWER].Update(
+                nValue=1 if state else 0,
+                sValue="On" if state else "Off"
+            )
+
     def setBrightness(self, command, level):
+        """
+        Stipple stores brightness as display.brightness (0..255).
+        """
         if command == "Off":
             value = 0
         else:
@@ -614,6 +628,26 @@ class BasePlugin:
             Devices[UNIT_BRIGHTNESS].Update(
                 nValue=1 if value else 0,
                 sValue=str(percent)
+            )
+
+    def setAutoTransition(self, command):
+        """
+        Enable/disable transitions between apps:
+            PATCH /api/v1/settings
+            {"apps":{"transitions":true|false}}
+        """
+        state = command.upper() == "ON"
+
+        result = self._request(
+            "PATCH",
+            "/settings",
+            {"apps": {"transitions": state}}
+        )
+
+        if result is not None:
+            Devices[UNIT_AUTOTRANSITION].Update(
+                nValue=1 if state else 0,
+                sValue="On" if state else "Off"
             )
 
     def setTransition(self, level):
@@ -733,6 +767,9 @@ class BasePlugin:
         elif Unit == UNIT_BRIGHTNESS:
             self.setBrightness(Command, Level)
 
+        elif Unit == UNIT_AUTOTRANSITION:
+            self.setAutoTransition(Command)
+
         else:
             Domoticz.Error("Unsupported Stipple unit: {}".format(Unit))
 
@@ -758,19 +795,60 @@ class BasePlugin:
             Domoticz.Log("Stipple is reachable again")
             self.failures = 0
 
-        # /device documents the current panel brightness. Keep the Domoticz
-        # dimmer approximately in sync when available.
-        display = device.get("display")
-        if isinstance(display, dict) and "brightness" in display:
-            try:
-                raw = max(0, min(int(display["brightness"]), 255))
-                percent = int(round(raw * 100 / 255))
-                Devices[UNIT_BRIGHTNESS].Update(
-                    nValue=1 if raw else 0,
-                    sValue=str(percent)
+        # /settings is authoritative for controls that can also be changed
+        # through the Stipple web UI.
+        settings = self._request("GET", "/settings")
+        if not isinstance(settings, dict):
+            return
+
+        display = settings.get("display", {})
+        if isinstance(display, dict):
+            if "power" in display:
+                state = bool(display["power"])
+                Devices[UNIT_POWER].Update(
+                    nValue=1 if state else 0,
+                    sValue="On" if state else "Off"
                 )
-            except (TypeError, ValueError, KeyError):
-                pass
+
+            if "brightness" in display:
+                try:
+                    raw = max(0, min(int(display["brightness"]), 255))
+                    percent = int(round(raw * 100 / 255))
+                    Devices[UNIT_BRIGHTNESS].Update(
+                        nValue=1 if raw else 0,
+                        sValue=str(percent)
+                    )
+                except (TypeError, ValueError):
+                    pass
+
+            if "overlay" in display:
+                overlay = str(display["overlay"]).lower()
+                if overlay in OVERLAY_VALUES:
+                    index = OVERLAY_VALUES.index(overlay)
+                    level = index * 10
+                    Devices[UNIT_OVERLAY].Update(
+                        nValue=level,
+                        sValue=str(level)
+                    )
+
+        apps = settings.get("apps", {})
+        if isinstance(apps, dict):
+            if "transition" in apps:
+                transition = str(apps["transition"]).lower()
+                if transition in TRANSITION_VALUES:
+                    index = TRANSITION_VALUES.index(transition)
+                    level = index * 10
+                    Devices[UNIT_TRANSITION].Update(
+                        nValue=level,
+                        sValue=str(level)
+                    )
+
+            if "transitions" in apps:
+                state = bool(apps["transitions"])
+                Devices[UNIT_AUTOTRANSITION].Update(
+                    nValue=1 if state else 0,
+                    sValue="On" if state else "Off"
+                )
 
 
 global _plugin
