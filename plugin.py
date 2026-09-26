@@ -1,5 +1,5 @@
 """
-<plugin key="STIPPLE" name="Stipple" author="Mark Heinis" version="1.0.3" wikilink="https://github.com/galadril/Stipple" externallink="https://github.com/galadril/Stipple">
+<plugin key="STIPPLE" name="Stipple" author="Mark Heinis" version="1.0.4" wikilink="https://github.com/galadril/Stipple" externallink="https://github.com/galadril/Stipple">
     <description>
         <h2>Stipple Plugin</h2><br/>
         Integrates Stipple firmware with Domoticz while keeping the supported
@@ -493,56 +493,85 @@ class BasePlugin:
         )
 
     def sendCustomApp(self, payload):
-        if payload is None:
-            return
+        """
+        Send custom apps using Stipple's resource-oriented API.
 
-        payload = self.normaliseIcons(payload)
+        Each top-level app is stored separately with PUT /apps/{id}, then
+        activated separately with POST /apps/{id}/activate. Scene elements
+        remain grouped inside one scene and are not split into separate apps.
+        """
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except (TypeError, ValueError):
+                payload = {"text": payload}
 
-        if self.nativeStippleApp(payload):
-            app = copy.deepcopy(payload)
-            app_id = self.sanitizeAppId(app.pop("id", "domoticz"))
-            app.setdefault("name", app_id)
-            app.setdefault("enabled", True)
-            self._request("PUT", "/apps/{}".format(app_id), app)
-            return
+        items = payload if isinstance(payload, list) else [payload]
+        sent = 0
 
-        entries = payload if isinstance(payload, list) else [payload]
-        app_id = self.customAppName(payload)
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                item = {"text": str(item)}
 
-        # A pushed AWTRIX app can be one object or a list of page-like objects.
-        # Translate each entry into scene elements and concatenate them.
-        elements = []
-        duration = None
+            app_id = self.customAppName(item)
 
-        for entry in entries:
-            if not isinstance(entry, dict):
+            if len(items) > 1 and not (item.get("id") or item.get("appname")):
+                app_id = self.sanitizeAppId(
+                    "{}-{}".format(DEFAULT_APP_NAME, index + 1)
+                )
+
+            if "scene" in item:
+                app = copy.deepcopy(item)
+                app["id"] = app_id
+                app.setdefault("name", item.get("name") or app_id)
+                app.setdefault("enabled", True)
+            else:
+                elements = []
+                draw = item.get("draw")
+                sources = draw if isinstance(draw, list) else [item]
+
+                for source in sources:
+                    converted = self.awtrixElementToStipple(source)
+                    if not converted:
+                        continue
+                    if isinstance(converted, list):
+                        elements.extend(converted)
+                    else:
+                        elements.append(converted)
+
+                app = {
+                    "id": app_id,
+                    "name": item.get("name") or item.get("appname") or app_id,
+                    "enabled": True,
+                    "durationSeconds": int(
+                        item.get("durationSeconds", item.get("duration", 0)) or 0
+                    ),
+                    "scene": {"elements": elements}
+                }
+
+            stored = self._request("PUT", "/apps/{}".format(app_id), app)
+            if stored is None:
+                Domoticz.Error(
+                    "Could not create/update Stipple custom app '{}'".format(app_id)
+                )
                 continue
 
-            scene = self.awtrixElementToStipple(entry)
-            elements.extend(scene.get("elements", []))
+            activated = self._request("POST", "/apps/{}/activate".format(app_id))
+            if activated is None:
+                Domoticz.Error(
+                    "Stipple custom app '{}' was stored but could not be activated"
+                    .format(app_id)
+                )
+                continue
 
-            if duration is None:
-                raw_duration = entry.get("durationSeconds", entry.get("duration"))
-                if raw_duration is not None:
-                    try:
-                        duration = max(0, int(raw_duration))
-                    except (TypeError, ValueError):
-                        pass
+            sent += 1
 
-        app = {
-            "name": app_id,
-            "enabled": True,
-            "scene": {"elements": elements}
-        }
-        if duration is not None:
-            app["durationSeconds"] = duration
-
-        result = self._request("PUT", "/apps/{}".format(app_id), app)
-        if result is not None:
-            # Pushed apps are expected to become visible immediately.
-            self._request("POST", "/apps/{}/activate".format(app_id))
-
-    # ----------------------------------------------------------- settings/UI
+        if sent:
+            Domoticz.Log(
+                "Sent and activated {} Stipple custom app{}".format(
+                    sent, "" if sent == 1 else "s"
+                )
+            )
 
     def sendSettings(self, message):
         """
