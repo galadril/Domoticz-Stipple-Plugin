@@ -556,14 +556,6 @@ class BasePlugin:
                 )
                 continue
 
-            activated = self._request("POST", "/apps/{}/activate".format(app_id))
-            if activated is None:
-                Domoticz.Error(
-                    "Stipple custom app '{}' was stored but could not be activated"
-                    .format(app_id)
-                )
-                continue
-
             sent += 1
 
         if sent:
